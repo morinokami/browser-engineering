@@ -8,3 +8,4 @@
 #   with-sources: false
 
 -e file:.
+ruff==0.3.2
