@@ -1,3 +1,9 @@
+from .browser import URL, load
+
+
 def main() -> int:
-    print("Hello from browser-engineering!")
+    import sys
+
+    load(URL(sys.argv[1]))
+
     return 0
