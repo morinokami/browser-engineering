@@ -1,3 +1,8 @@
 # browser-engineering
 
-Describe your project here.
+https://browser.engineering/
+
+```bash
+$ rye sync
+$ rye run browser-engineering https://example.org/
+```
