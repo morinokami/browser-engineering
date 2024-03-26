@@ -1,9 +1,12 @@
-from .browser import URL, load
+import tkinter
+
+from .browser import URL, Browser
 
 
 def main() -> int:
     import sys
 
-    load(URL(sys.argv[1]))
+    Browser().load(URL(sys.argv[1]))
+    tkinter.mainloop()
 
     return 0
