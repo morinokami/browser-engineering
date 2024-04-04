@@ -2,7 +2,7 @@ import socket
 import ssl
 import tkinter
 import tkinter.font
-from typing import Literal
+from typing import Literal, Self
 
 
 class URL:
@@ -90,8 +90,8 @@ class Browser:
 
     def load(self, url: URL) -> None:
         body = url.request()
-        tokens = lex(body)
-        self.display_list = Layout(tokens).display_list
+        self.nodes = HTMLParser(body).parse()
+        self.display_list = Layout(self.nodes).display_list
         self.draw()
 
     def draw(self) -> None:
@@ -109,43 +109,159 @@ class Browser:
 
 
 class Text:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, parent: Self | "Element") -> None:
         self.text = text
+        self.children: list[Self | Element] = []
+        self.parent = parent
 
     def __repr__(self) -> str:
-        return "Text('{}')".format(self.text)
+        return repr(self.text)
 
 
-class Tag:
-    def __init__(self, tag: str) -> None:
+class Element:
+    def __init__(
+        self, tag: str, attributes: dict[str, str], parent: Self | Text | None
+    ) -> None:
         self.tag = tag
+        self.attributes = attributes
+        self.children: list[Self | Text] = []
+        self.parent = parent
 
     def __repr__(self) -> str:
-        return "Tag('{}')".format(self.tag)
+        return "<" + self.tag + ">"
 
 
-TokenType = Text | Tag
+TokenType = Text | Element
 
 
-def lex(body: str) -> list[TokenType]:
-    out: list[TokenType] = []
-    buffer = ""
-    in_tag = False
-    for c in body:
-        if c == "<":
-            in_tag = True
-            if buffer:
-                out.append(Text(buffer))
-            buffer = ""
-        elif c == ">":
-            in_tag = False
-            out.append(Tag(buffer))
-            buffer = ""
+def print_tree(node: TokenType, indent: int = 0) -> None:
+    print(" " * indent, node)
+    for child in node.children:
+        print_tree(child, indent + 2)
+
+
+class HTMLParser:
+    def __init__(self, body: str) -> None:
+        self.body = body
+        self.unfinished: list[TokenType] = []
+
+    def parse(self) -> TokenType:
+        text = ""
+        in_tag = False
+        for c in self.body:
+            if c == "<":
+                in_tag = True
+                if text:
+                    self.add_text(text)
+                text = ""
+            elif c == ">":
+                in_tag = False
+                self.add_tag(text)
+                text = ""
+            else:
+                text += c
+        if not in_tag and text:
+            self.add_text(text)
+        return self.finish()
+
+    def get_attributes(self, text: str) -> tuple[str, dict[str, str]]:
+        parts = text.split()
+        tag = parts[0].casefold()
+        attributes = {}
+        for attrpair in parts[1:]:
+            if "=" in attrpair:
+                key, value = attrpair.split("=", 1)
+                if len(value) > 2 and value[0] in ["'", '"']:
+                    value = value[1:-1]
+                attributes[key.casefold()] = value
+            else:
+                attributes[attrpair.casefold()] = ""
+        return tag, attributes
+
+    def add_text(self, text: str) -> None:
+        if text.isspace():
+            return
+        self.implicit_tags(None)
+        parent = self.unfinished[-1]
+        node = Text(text, parent)
+        parent.children.append(node)
+
+    SELF_CLOSING_TAGS = [
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    ]
+
+    def add_tag(self, tag: str) -> None:
+        tag, attributes = self.get_attributes(tag)
+        if tag.startswith("!"):
+            return
+        self.implicit_tags(tag)
+        if tag.startswith("/"):
+            if len(self.unfinished) == 1:
+                return
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        elif tag in self.SELF_CLOSING_TAGS:
+            parent = self.unfinished[-1]
+            node = Element(tag, attributes, parent)
+            parent.children.append(node)
         else:
-            buffer += c
-    if not in_tag and buffer:
-        out.append(Text(buffer))
-    return out
+            _parent = self.unfinished[-1] if self.unfinished else None
+            node = Element(tag, attributes, _parent)
+            self.unfinished.append(node)
+
+    HEAD_TAGS = [
+        "base",
+        "basefont",
+        "bgsound",
+        "noscript",
+        "link",
+        "meta",
+        "title",
+        "style",
+        "script",
+    ]
+
+    def implicit_tags(self, tag: str | None) -> None:
+        while True:
+            open_tags = [
+                node.tag for node in self.unfinished if isinstance(node, Element)
+            ]
+            if open_tags == [] and tag != "html":
+                self.add_tag("html")
+            elif open_tags == ["html"] and tag not in ["head", "body", "/html"]:
+                if tag in self.HEAD_TAGS:
+                    self.add_tag("head")
+                else:
+                    self.add_tag("body")
+            elif (
+                open_tags == ["html", "head"] and tag not in ["/head"] + self.HEAD_TAGS
+            ):
+                self.add_tag("/head")
+            else:
+                break
+
+    def finish(self) -> TokenType:
+        if not self.unfinished:
+            self.implicit_tags(None)
+        while len(self.unfinished) > 1:
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        return self.unfinished.pop()
 
 
 FontWeightType = Literal["normal", "bold"]
@@ -169,7 +285,7 @@ DisplayListType = list[tuple[int, float, str, tkinter.font.Font]]
 
 
 class Layout:
-    def __init__(self, tokens: list[TokenType]) -> None:
+    def __init__(self, tree: TokenType) -> None:
         self.display_list: DisplayListType = []
         self.cursor_x = HSTEP
         self.cursor_y = float(VSTEP)
@@ -177,8 +293,7 @@ class Layout:
         self.style: FontSlantType = "roman"
         self.size = 16
         self.line: list[tuple[int, str, tkinter.font.Font]] = []
-        for tok in tokens:
-            self.token(tok)
+        self.recurse(tree)
         self.flush()
 
     def token(self, tok: TokenType) -> None:
@@ -228,3 +343,38 @@ class Layout:
         self.cursor_y = baseline + 1.25 * max_descent
         self.cursor_x = HSTEP
         self.line = []
+
+    def recurse(self, tree: TokenType) -> None:
+        if isinstance(tree, Text):
+            for word in tree.text.split():
+                self.word(word)
+        else:
+            self.open_tag(tree.tag)
+            for child in tree.children:
+                self.recurse(child)
+            self.close_tag(tree.tag)
+
+    def open_tag(self, tag: str) -> None:
+        if tag == "i":
+            self.style = "italic"
+        elif tag == "b":
+            self.weight = "bold"
+        elif tag == "small":
+            self.size -= 2
+        elif tag == "big":
+            self.size += 4
+        elif tag == "br":
+            self.flush()
+
+    def close_tag(self, tag: str) -> None:
+        if tag == "i":
+            self.style = "roman"
+        elif tag == "b":
+            self.weight = "normal"
+        elif tag == "small":
+            self.size += 2
+        elif tag == "big":
+            self.size -= 4
+        elif tag == "p":
+            self.flush()
+            self.cursor_y += VSTEP
